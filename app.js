@@ -9,17 +9,12 @@
 // ===========================
 const State = {
   currentPage: 'page-home',
-  prevPage: null,
-  prevScrollY: 0,
+  pageStack: [],          // navigation stack
+  scrollPositions: {},    // scroll positions per page
   currentSiteUrl: '',
   currentSiteName: '',
   currentSiteCategory: '',
-  isDark: false,
-  isAdminLoggedIn: false,
-  notes: {
-    1: localStorage.getItem('nexora_note1') || 'salam',
-    2: localStorage.getItem('nexora_note2') || 'pendir'
-  }
+  isDark: true
 };
 
 // ===========================
@@ -28,7 +23,6 @@ const State = {
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initHeroVideo();
-  initNotes();
   initCounters();
   window.scrollTo(0, 0);
 });
@@ -38,10 +32,11 @@ document.addEventListener('DOMContentLoaded', () => {
 // ===========================
 function initTheme() {
   const saved = localStorage.getItem('nexora_theme');
-  if (saved === 'dark') {
-    enableDark();
-  } else {
+  // Default is dark
+  if (saved === 'light') {
     enableLight();
+  } else {
+    enableDark();
   }
 }
 
@@ -52,16 +47,14 @@ function toggleTheme() {
 
 function enableDark() {
   State.isDark = true;
-  document.getElementById('body').classList.remove('light-mode');
-  document.getElementById('body').classList.add('dark-mode');
+  document.getElementById('body').className = 'dark-mode';
   localStorage.setItem('nexora_theme', 'dark');
   updateThemeIcons('☀️');
 }
 
 function enableLight() {
   State.isDark = false;
-  document.getElementById('body').classList.remove('dark-mode');
-  document.getElementById('body').classList.add('light-mode');
+  document.getElementById('body').className = 'light-mode';
   localStorage.setItem('nexora_theme', 'light');
   updateThemeIcons('🌙');
 }
@@ -71,76 +64,111 @@ function updateThemeIcons(icon) {
 }
 
 // ===========================
-// HERO VIDEO
+// HERO VIDEO - OPTIMIZED FOR MOBILE
 // ===========================
 function initHeroVideo() {
   const video = document.getElementById('heroVideo');
   if (!video) return;
 
-  video.muted = true;
-  video.playsInline = true;
+  // Detect low-end / mobile devices
+  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+  const isSlowConnection = navigator.connection &&
+    (navigator.connection.saveData ||
+      ['slow-2g', '2g'].includes(navigator.connection.effectiveType));
 
-  const tryPlay = () => {
-    const p = video.play();
-    if (p instanceof Promise) {
-      p.catch(() => {
-        // Autoplay blocked, wait for user interaction
-        document.addEventListener('touchstart', () => video.play(), { once: true });
-        document.addEventListener('click', () => video.play(), { once: true });
-      });
-    }
-  };
-
-  if (video.readyState >= 2) {
-    tryPlay();
-  } else {
-    video.addEventListener('canplay', tryPlay, { once: true });
+  if (isSlowConnection) {
+    // Skip video on very slow connections
+    video.style.display = 'none';
+    return;
   }
 
-  // Restart on end (loop is already set but just in case)
-  video.addEventListener('ended', () => {
-    video.currentTime = 0;
-    video.play().catch(() => {});
-  });
+  // On mobile use lower quality if available, defer load
+  if (isMobile) {
+    video.setAttribute('preload', 'none');
+  } else {
+    video.setAttribute('preload', 'metadata');
+  }
+
+  video.muted = true;
+  video.playsInline = true;
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+
+  // Use IntersectionObserver to only play video when visible
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        tryPlayVideo(video);
+      } else {
+        video.pause();
+      }
+    });
+  }, { threshold: 0.1 });
+
+  observer.observe(video);
+
+  // Fallback: start on interaction
+  const onInteract = () => {
+    tryPlayVideo(video);
+    document.removeEventListener('touchstart', onInteract);
+    document.removeEventListener('click', onInteract);
+  };
+  document.addEventListener('touchstart', onInteract, { passive: true });
+  document.addEventListener('click', onInteract, { once: true });
+}
+
+function tryPlayVideo(video) {
+  if (!video || video.paused === false) return;
+  const p = video.play();
+  if (p instanceof Promise) {
+    p.catch(() => {});
+  }
 }
 
 // ===========================
-// PAGE NAVIGATION
+// PAGE NAVIGATION (with scroll position preservation)
 // ===========================
 function openPage(pageId) {
-  // Save scroll position
-  State.prevScrollY = window.scrollY;
+  if (State.currentPage === pageId) return;
+
+  // Save current page scroll
+  State.scrollPositions[State.currentPage] = window.scrollY;
 
   const current = document.getElementById(State.currentPage);
   const next = document.getElementById(pageId);
+  if (!next) return;
 
-  if (!next || State.currentPage === pageId) return;
-
-  State.prevPage = State.currentPage;
+  // Push to stack
+  State.pageStack.push(State.currentPage);
   State.currentPage = pageId;
 
   if (current) current.classList.remove('active');
   next.classList.add('active');
   next.classList.remove('slide-in');
-  // Force reflow
   void next.offsetWidth;
   next.classList.add('slide-in');
 
-  // Scroll to top of new page
-  window.scrollTo(0, 0);
+  // Restore or reset scroll for new page
+  const savedScroll = State.scrollPositions[pageId] || 0;
+  requestAnimationFrame(() => {
+    window.scrollTo(0, savedScroll);
+  });
 }
 
 function goBack() {
-  if (!State.prevPage) {
-    openPage('page-home');
+  if (State.pageStack.length === 0) {
+    _switchTo('page-home');
     return;
   }
 
-  const current = document.getElementById(State.currentPage);
-  const prev = document.getElementById(State.prevPage);
+  // Save current scroll
+  State.scrollPositions[State.currentPage] = window.scrollY;
 
-  State.currentPage = State.prevPage;
-  State.prevPage = null;
+  const prevPageId = State.pageStack.pop();
+  const current = document.getElementById(State.currentPage);
+  const prev = document.getElementById(prevPageId);
+
+  State.currentPage = prevPageId;
 
   if (current) current.classList.remove('active');
   if (prev) {
@@ -150,25 +178,82 @@ function goBack() {
     prev.classList.add('slide-in');
   }
 
-  // Restore scroll position (only for home page)
-  if (State.currentPage === 'page-home') {
-    requestAnimationFrame(() => {
-      window.scrollTo(0, State.prevScrollY);
-    });
-  } else {
-    window.scrollTo(0, 0);
+  // Restore scroll
+  const savedScroll = State.scrollPositions[prevPageId] || 0;
+  requestAnimationFrame(() => {
+    window.scrollTo(0, savedScroll);
+  });
+}
+
+// Go back to services page specifically
+function goBackToServices() {
+  // Save current scroll
+  State.scrollPositions[State.currentPage] = window.scrollY;
+
+  const current = document.getElementById(State.currentPage);
+  const services = document.getElementById('page-services');
+
+  State.currentPage = 'page-services';
+  // Remove sub-pages from stack until services or empty
+  while (State.pageStack.length > 0 && State.pageStack[State.pageStack.length - 1] !== 'page-services') {
+    State.pageStack.pop();
   }
+  if (State.pageStack.length > 0) State.pageStack.pop(); // remove services itself if there
+
+  if (current) current.classList.remove('active');
+  if (services) {
+    services.classList.add('active');
+    services.classList.remove('slide-in');
+    void services.offsetWidth;
+    services.classList.add('slide-in');
+  }
+
+  const savedScroll = State.scrollPositions['page-services'] || 0;
+  requestAnimationFrame(() => {
+    window.scrollTo(0, savedScroll);
+  });
+}
+
+function openSubPage(pageId) {
+  // Save current services scroll
+  State.scrollPositions[State.currentPage] = window.scrollY;
+
+  const current = document.getElementById(State.currentPage);
+  const next = document.getElementById(pageId);
+  if (!next) return;
+
+  State.pageStack.push(State.currentPage);
+  State.currentPage = pageId;
+
+  if (current) current.classList.remove('active');
+  next.classList.add('active');
+  next.classList.remove('slide-in');
+  void next.offsetWidth;
+  next.classList.add('slide-in');
+
+  window.scrollTo(0, 0);
+}
+
+function _switchTo(pageId) {
+  const current = document.getElementById(State.currentPage);
+  const next = document.getElementById(pageId);
+  if (!next) return;
+
+  State.pageStack = [];
+  State.currentPage = pageId;
+
+  if (current) current.classList.remove('active');
+  next.classList.add('active');
+
+  const savedScroll = State.scrollPositions[pageId] || 0;
+  requestAnimationFrame(() => {
+    window.scrollTo(0, savedScroll);
+  });
 }
 
 function scrollToTop() {
   if (State.currentPage !== 'page-home') {
-    // Go to home first
-    const current = document.getElementById(State.currentPage);
-    const home = document.getElementById('page-home');
-    if (current) current.classList.remove('active');
-    if (home) home.classList.add('active');
-    State.currentPage = 'page-home';
-    State.prevPage = null;
+    _switchTo('page-home');
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -190,26 +275,22 @@ function openSiteView(url, name, category) {
   State.currentSiteName = name;
   State.currentSiteCategory = category;
 
+  // Save scroll position of the sub-page (saytlar)
+  State.scrollPositions[State.currentPage] = window.scrollY;
+
   const frame = document.getElementById('siteFrame');
   const title = document.getElementById('siteviewTitle');
 
   if (frame) {
     frame.src = '';
-    // Small delay to allow page switch first
-    setTimeout(() => {
-      frame.src = url;
-    }, 80);
+    setTimeout(() => { frame.src = url; }, 80);
   }
-
   if (title) title.textContent = name;
 
-  // Save previous page (services page)
-  State.prevPage = State.currentPage;
-
+  State.pageStack.push(State.currentPage);
   const current = document.getElementById(State.currentPage);
   const siteView = document.getElementById('page-siteview');
 
-  State.prevScrollY = window.scrollY;
   State.currentPage = 'page-siteview';
 
   if (current) current.classList.remove('active');
@@ -226,7 +307,6 @@ function openSiteView(url, name, category) {
 function closeSiteView() {
   const frame = document.getElementById('siteFrame');
   if (frame) frame.src = '';
-
   goBack();
 }
 
@@ -235,105 +315,6 @@ function orderNow() {
     `Salam! ${State.currentSiteName} saytı haqqında sifariş vermək istəyirəm.`;
   const encoded = encodeURIComponent(msg);
   window.open(`https://wa.me/${WA_NUMBER}?text=${encoded}`, '_blank', 'noopener');
-}
-
-// ===========================
-// ADMIN LOGIN
-// ===========================
-function openAdminLogin() {
-  if (State.isAdminLoggedIn) {
-    openPage('page-admin');
-    return;
-  }
-  document.getElementById('adminModal').classList.add('open');
-  setTimeout(() => {
-    const u = document.getElementById('adminUser');
-    if (u) u.focus();
-  }, 150);
-}
-
-function closeAdminModal(event) {
-  if (!event || event.target === document.getElementById('adminModal') || !event) {
-    document.getElementById('adminModal').classList.remove('open');
-    document.getElementById('adminError').textContent = '';
-    document.getElementById('adminUser').value = '';
-    document.getElementById('adminPass').value = '';
-  }
-}
-
-function adminLogin() {
-  const user = document.getElementById('adminUser').value.trim();
-  const pass = document.getElementById('adminPass').value;
-  const err = document.getElementById('adminError');
-
-  if (user === 'admin' && pass === '0618') {
-    State.isAdminLoggedIn = true;
-    err.textContent = '';
-    document.getElementById('adminModal').classList.remove('open');
-    document.getElementById('adminUser').value = '';
-    document.getElementById('adminPass').value = '';
-    openPage('page-admin');
-  } else {
-    err.textContent = 'İstifadəçi adı və ya şifrə yanlışdır.';
-    document.getElementById('adminPass').value = '';
-    document.getElementById('adminPass').focus();
-    // Shake animation
-    const box = document.querySelector('.modal-box');
-    box.style.animation = 'none';
-    void box.offsetWidth;
-    box.style.animation = 'shake 0.4s ease';
-  }
-}
-
-// ===========================
-// ADMIN NOTES
-// ===========================
-function initNotes() {
-  document.getElementById('note1-view').textContent = State.notes[1];
-  document.getElementById('note2-view').textContent = State.notes[2];
-}
-
-function editNote(n) {
-  const view = document.getElementById(`note${n}-view`);
-  const editArea = document.getElementById(`note${n}-edit`);
-  const actions = document.getElementById(`note${n}-actions`);
-  const btn = editArea.closest('.admin-note-card').querySelector('.note-edit-btn');
-
-  editArea.value = State.notes[n];
-  view.classList.add('hidden');
-  editArea.classList.remove('hidden');
-  actions.classList.remove('hidden');
-  btn.classList.add('hidden');
-  editArea.focus();
-}
-
-function saveNote(n) {
-  const editArea = document.getElementById(`note${n}-edit`);
-  const view = document.getElementById(`note${n}-view`);
-  const actions = document.getElementById(`note${n}-actions`);
-  const btn = editArea.closest('.admin-note-card').querySelector('.note-edit-btn');
-
-  const val = editArea.value.trim();
-  State.notes[n] = val;
-  localStorage.setItem(`nexora_note${n}`, val);
-
-  view.textContent = val;
-  view.classList.remove('hidden');
-  editArea.classList.add('hidden');
-  actions.classList.add('hidden');
-  btn.classList.remove('hidden');
-}
-
-function cancelEdit(n) {
-  const editArea = document.getElementById(`note${n}-edit`);
-  const view = document.getElementById(`note${n}-view`);
-  const actions = document.getElementById(`note${n}-actions`);
-  const btn = editArea.closest('.admin-note-card').querySelector('.note-edit-btn');
-
-  view.classList.remove('hidden');
-  editArea.classList.add('hidden');
-  actions.classList.add('hidden');
-  btn.classList.remove('hidden');
 }
 
 // ===========================
@@ -357,45 +338,28 @@ function initCounters() {
 
 function animateCounter(el) {
   const target = parseInt(el.getAttribute('data-target'), 10);
-  const duration = 1200;
-  const step = Math.ceil(duration / target);
+  const duration = 1000;
+  const fps = 30;
+  const steps = Math.floor(duration / (1000 / fps));
   let current = 0;
+  let step = 0;
 
   const timer = setInterval(() => {
-    current += Math.max(1, Math.floor(target / 60));
-    if (current >= target) {
+    step++;
+    current = Math.round(target * (step / steps));
+    if (step >= steps) {
       current = target;
       clearInterval(timer);
     }
     el.textContent = current + (target >= 100 ? '+' : '');
-  }, step);
+  }, 1000 / fps);
 }
-
-// ===========================
-// SHAKE ANIMATION (CSS inject)
-// ===========================
-(function injectShake() {
-  const style = document.createElement('style');
-  style.textContent = `
-    @keyframes shake {
-      0%,100%{transform:translateX(0)}
-      20%{transform:translateX(-6px)}
-      40%{transform:translateX(6px)}
-      60%{transform:translateX(-4px)}
-      80%{transform:translateX(4px)}
-    }
-  `;
-  document.head.appendChild(style);
-})();
 
 // ===========================
 // KEYBOARD SUPPORT
 // ===========================
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    const modal = document.getElementById('adminModal');
-    if (modal.classList.contains('open')) {
-      closeAdminModal();
-    }
+  if (e.key === 'Escape' && State.currentPage !== 'page-home') {
+    goBack();
   }
 });
